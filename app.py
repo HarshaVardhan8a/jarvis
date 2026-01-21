@@ -1,7 +1,6 @@
 import streamlit as st
 import os
 import tempfile
-from langchain_community.callbacks import StreamlitCallbackHandler
 from jarvis_core import Jarvis
 
 # Page Config
@@ -65,15 +64,14 @@ with st.sidebar:
     st.title("🧠 Core Systems")
     st.markdown("Wait for the system to come online.")
     
-    if st.button("Initialize / Reset Knowledge Base"):
-        with st.spinner("Seeding database with built-in knowledge..."):
+    if st.button("Ingest 'data' Folder"):
+        with st.spinner("Ingesting files from /data directory..."):
             try:
-                # Run the seeder function directly
-                import seed_knowledge
-                seed_knowledge.seed_knowledge()
-                st.success("Knowledge Base Online! 50+ Data Points Active.")
+                # Ingest from data folder
+                result = jarvis.seed_knowledge()
+                st.success(f"{result}")
             except Exception as e:
-                st.error(f"Initialization Failed: {e}")
+                st.error(f"Ingestion Failed: {e}")
     
     st.markdown("---")
     st.markdown("### System Status")
@@ -104,13 +102,13 @@ if prompt := st.chat_input("Ask Jarvis anything..."):
     # Generate Response
     if jarvis:
         with st.chat_message("assistant"):
-            # Create a container for the agent's thoughts
-            st_callback = StreamlitCallbackHandler(st.container())
-            try:
-                response = jarvis.chat(prompt, callbacks=[st_callback])
-                st.markdown(response)
-                st.session_state.messages.append({"role": "assistant", "content": response})
-            except Exception as e:
-                st.error(f"Error generating response: {e}")
+            with st.spinner("Processing..."):
+                try:
+                    # Direct chat call, no callbacks needed for speed
+                    response = jarvis.chat(prompt)
+                    st.markdown(response)
+                    st.session_state.messages.append({"role": "assistant", "content": response})
+                except Exception as e:
+                    st.error(f"Error generating response: {e}")
     else:
         st.error("Jarvis is not initialized. Check your configuration.")

@@ -35,6 +35,3 @@
     ollama serve  # Ensure Llama 3.1 is pulled
     streamlit run app.py
     ```
-
-## License
-MIT

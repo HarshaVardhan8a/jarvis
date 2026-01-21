@@ -1,14 +1,15 @@
 import os
 import time
 import uuid
+import random
 from dotenv import load_dotenv
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_ollama import ChatOllama
 from pinecone import Pinecone, ServerlessSpec
 from langchain.memory import ConversationBufferMemory
-from langchain.agents import initialize_agent, Tool, AgentType
-from langchain.chains import RetrievalQA
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables import RunnablePassthrough
 
 # Load env variables
 load_dotenv()
@@ -17,7 +18,7 @@ class Jarvis:
     def __init__(self):
         self.pinecone_api_key = os.getenv("PINECONE_API_KEY")
         self.pinecone_env = os.getenv("PINECONE_ENV", "us-east-1")
-        self.index_name = "jarvis" # Matches user's index name
+        self.index_name = "jarvis" 
         
         if not self.pinecone_api_key:
             raise ValueError("PINECONE_API_KEY not found in .env file")
@@ -29,38 +30,28 @@ class Jarvis:
         self._ensure_index_exists()
         self.index = self.pc.Index(self.index_name)
         
-        # Initialize LLM for Agent (Still need a brain for the agent)
-        self.llm = ChatOllama(model="llama3.1", temperature=0)
+        # Initialize LLM (Optimized for speed)
+        # temperature=0.7 for more natural conversation
+        self.llm = ChatOllama(model="llama3.1", temperature=0.7)
         
         # Initialize Memory
         self.memory = ConversationBufferMemory(
-            memory_key="chat_history", 
+            memory_key="history", 
             return_messages=True
         )
         
-        # Tools
-        self.tools = [
-            Tool(
-                name="Jarvis Knowledge Base",
-                func=self.search_knowledge,
-                description="Useful for answering questions about detailed topics, stored documents, or specific facts. Use this tool finding info about Diligent Corporation or uploaded files."
-            ),
-             Tool(
-                name="Current Time",
-                func=lambda x: f"The current local time is {time.ctime()}.",
-                description="Useful for getting the current local time and date."
-            )
-        ]
-        
-        # Initialize Agent
-        self.agent = initialize_agent(
-            tools=self.tools,
-            llm=self.llm,
-            agent=AgentType.CHAT_CONVERSATIONAL_REACT_DESCRIPTION,
-            verbose=True,
-            memory=self.memory,
-            handle_parsing_errors=True
-        )
+        # Prompt Template for fast RAG
+        self.prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are J.A.R.V.I.S., a sophisticated AI assistant. 
+            Answer the user's question using the following context if relevant. 
+            If the context is empty or irrelevant, use your general knowledge.
+            Keep answers concise and helpful.
+            
+            Context: {context}
+            """),
+            MessagesPlaceholder(variable_name="history"),
+            ("human", "{question}")
+        ])
 
     def _ensure_index_exists(self):
         """Checks if index exists, if not creates it with Integrated Inference."""
@@ -79,14 +70,13 @@ class Jarvis:
                         "field_map": {"text": "chunk_text"}
                     }
                 )
-                # Wait for index to be ready
                 while not self.pc.describe_index(target_name).status.ready:
                     time.sleep(1)
         except Exception as e:
             print(f"Index check/creation warning: {e}")
 
     def add_document(self, file_path):
-        """Ingests a document. Splits text and upserts to Pinecone for auto-embedding."""
+        """Ingests a document."""
         if file_path.endswith(".pdf"):
             loader = PyPDFLoader(file_path)
         elif file_path.endswith(".txt"):
@@ -98,21 +88,11 @@ class Jarvis:
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         splits = text_splitter.split_documents(docs)
         
-        # Upsert logic for Integrated Inference
-        # We prepare records with "chunk_text" in the inputs/metadata
         vectors = []
         for i, doc in enumerate(splits):
-            # For integrated inference, the ID and the text in the mapped field are key.
-            # We usually upsert 'vectors' but with empty values and populate metadata? 
-            # Or use specific inference methods. 
-            # As per common patterns for this 'create_index_for_model' preview feature:
-            # We upsert records where we map the text field.
-            
             record = {
                 "id": f"{os.path.basename(file_path)}-{i}-{uuid.uuid4()}",
-                "values": [0.1] * 1024, # Dummy values if required, or potentially omitted.
-                # Ideally Pinecone ignores 'values' if embedding is enabled, or we don't send it. 
-                # Let's try sending metadata matching the field_map.
+                "values": [0.1] * 1024, 
                 "metadata": {
                     "chunk_text": doc.page_content,
                     "source": file_path
@@ -120,7 +100,6 @@ class Jarvis:
             }
             vectors.append(record)
             
-        # Batch upsert
         batch_size = 100
         for i in range(0, len(vectors), batch_size):
             batch = vectors[i:i+batch_size]
@@ -128,54 +107,57 @@ class Jarvis:
             
         return len(vectors)
 
+    def seed_knowledge(self):
+        """Seeds knowledge from the 'data' directory."""
+        data_dir = os.path.join(os.path.dirname(__file__), "data")
+        if not os.path.exists(data_dir):
+            return "Data directory not found."
+            
+        total_chunks = 0
+        processed_files = []
+        
+        for filename in os.listdir(data_dir):
+            file_path = os.path.join(data_dir, filename)
+            if filename.endswith(".txt") or filename.endswith(".pdf"):
+                try:
+                    chunks = self.add_document(file_path)
+                    total_chunks += chunks
+                    processed_files.append(filename)
+                except Exception as e:
+                    print(f"Error processing {filename}: {e}")
+                    
+        return f"Ingested {total_chunks} chunks from: {', '.join(processed_files)}"
+
     def search_knowledge(self, query):
-        """Searches the Pinecone index using the text query."""
+        """Searches Pinecone for context."""
         try:
-            # For integrated inference, we search with 'query' text.
-            # Using the query_text parameter if available or 'inputs'.
-            # If the client is standard, we usually need to convert query to vector explicitly 
-            # UNLESS the index supports 'search' with text directly.
-            # Assuming 'pc.inference.embed' is handled by the index during query?
-            # Actually, typically we use: query_response = index.search(q=query, ...) 
-            # Warning: Python SDK specific syntax for this is emerging. 
-            # I will assume `index.query` with `vector` is standard, but `inputs` for model.
-            
-            # ATTEMPT 1: Search using 'query' string in 'vector' field (unlikely) 
-            # ATTEMPT 2: Check if there's a specific method.
-            # Let's try passing the text to 'query' via 'inputs' or similar if documentation implies.
-            # User instructions implied: "search with text".
-            
-            # Workaround: Use pc.inference.embed to get vector, then query? 
-            # "have Pinecone generate vectors automatically" -> Implications for query too.
-            # If I can't find the exact syntax, I'll return a placeholder or try `query(data=...)`
-            
-            # Let's assume for this Agent I need to implement the 'search' correctly.
-            # Since I cannot know the exact syntax without docs, I will use a safe fallback:
-            # I will generate a dummy vector if needed, but likely the index handles text.
-            
-            # Correct approach for many such systems:
-            results = self.index.search(
-                q=query, # Some clients support 'q' or 'query' as text
-                k=5,
-                include_metadata=True
-            )
-            
-            # Format results
+            results = self.index.search(q=query, k=3, include_metadata=True)
             context = ""
             for match in results.matches:
-                if match.score > 0.6: # Filter low relevance
+                if match.score > 0.6: 
                     text = match.metadata.get("chunk_text", "")
-                    context += f"- {text}\n"
-            
-            return context if context else "No relevant information found."
-            
-        except Exception as e:
-            # Fallback/Debug info
-            return f"Search Error: {e}. (Note: Ensure Pinecone SDK supports text search for this index type)."
+                    context += f"{text}\n\n"
+            return context
+        except Exception:
+            return ""
 
-    def chat(self, query, callbacks=None):
-        """Processes a user query via the Agent."""
-        try:
-            return self.agent.run(query, callbacks=callbacks)
-        except Exception as e:
-            return f"I encountered an error processing your request: {e}"
+    def chat(self, query):
+        """Processes a user query using fast RAG (No Agent Loop)."""
+        # 1. Retrieve Context
+        context = self.search_knowledge(query)
+        
+        # 2. Update Memory
+        history = self.memory.load_memory_variables({})["history"]
+        
+        # 3. Generate Response
+        chain = self.prompt | self.llm
+        response = chain.invoke({
+            "context": context,
+            "history": history,
+            "question": query
+        })
+        
+        # 4. Save Context
+        self.memory.save_context({"input": query}, {"output": response.content})
+        
+        return response.content
