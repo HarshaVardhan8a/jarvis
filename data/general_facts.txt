@@ -1,0 +1,7 @@
+General Knowledge for Testing:
+- The current year is 2026.
+- The capital of France is Paris.
+- Photosynthesis is the process by which green plants and some other organisms use sunlight to synthesize foods from carbon dioxide and water.
+- The speed of light is approximately 299,792,458 meters per second.
+- Python is a high-level, interpreted programming language known for its readability.
+- The Earth is the third planet from the Sun.

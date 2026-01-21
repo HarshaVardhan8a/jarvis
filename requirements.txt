@@ -1,0 +1,8 @@
+langchain
+langchain-community
+langchain-core
+langchain-ollama
+langchain-pinecone
+pinecone-client
+python-dotenv
+pypdf
